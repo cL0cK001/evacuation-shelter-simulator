@@ -79,6 +79,24 @@ namespace EvacuationShelter.Voice
         public string responseMimeType = "application/json";
     }
 
+    [Serializable]
+    public class ShelterCharacterConfig
+    {
+        public string characterId;
+        public string characterName;
+        public int age;
+        public string gender;
+        public int speakerId;
+        public string description;
+    }
+
+    [Serializable]
+    public class ShelterRoleplaySettingsData
+    {
+        public string systemPromptPrefix;
+        public List<ShelterCharacterConfig> characters;
+    }
+
     /// <summary>
     /// Google Gemini / Groq / OpenRouter 等の無料AI APIと通信し、避難所ロールプレイを行う対話マネージャー
     /// </summary>
@@ -96,6 +114,9 @@ namespace EvacuationShelter.Voice
 
         [Header("音声話者ID (VOICEVOX)")]
         [SerializeField] private int defaultSpeakerId = 3; // ずんだもん
+
+        private ShelterRoleplaySettingsData settingsData;
+        private string loadedSystemPrompt = "";
 
         public string ApiKey
         {
@@ -124,31 +145,6 @@ namespace EvacuationShelter.Voice
         public event Action<AiRoleplayResponse> OnResponseReceived;
         public event Action<string> OnStatusChanged;
 
-        private const string SYSTEM_PROMPT = @"
-本システムは、災害時の避難所における要配慮者の状況を体験・シミュレーションするためのロールプレイシステムです。
-
-【役割と規則】
-- あなたは選択されたキャラクターになりきって、福祉の専門家であるユーザーと対話します。
-- ユーザーが「体験モード」を選択した場合は、下記の5つのキャラクター【1】〜【5】の中からランダムに1人を選択し、その人物になりきってください。
-- 出力は必ず以下のJSON形式のみで返答してください。余計なマークダウンや説明テキストは一切含めないでください。
-
-【出力JSONフォーマット】
-{
-  ""characterId"": ""01〜05"",
-  ""characterName"": ""キャラクター名"",
-  ""dialogue"": ""発話するセリフ"",
-  ""situation"": ""【状況】現在の仕草、行動、表情、周囲の様子"",
-  ""emotion"": ""Normal"" | ""Happy"" | ""Sad"" | ""Angry"" | ""Surprised""
-}
-
-【キャラクター設定一覧】
-1. characterId: '01', 75歳男性, 足の痛み/疲労/軽度認知症疑い。段ボールベッド未設置で床に直寝。暗闇と転倒を恐れトイレ我慢。「家に帰らなきゃ」と徘徊。
-2. characterId: '02', 32歳女性, 乳幼児同伴/重度アレルギー(卵・乳)。授乳室・プライバシー不足。子供のぐずりに謝り身を縮める。車中避難を検討。
-3. characterId: '03', 60歳女性, 軽度聴覚障害/ペット(小型犬)同伴。アナウンス聞こえず情報孤立。ペットクレームを懸念。相手の口元をじっと見る。
-4. characterId: '04', 45歳男性, 視覚障害(全盲)/白杖。障害物で歩行動線なし。トイレ同行を頼めず水分我慢で脱水症状。壁沿いに立つ。
-5. characterId: '05', 22歳女性, 外国人(イスラム教徒)/日本語不自由。ハラール・礼拝スペースなし。弁当表示読めず空腹。片言で必死に尋ねる。
-";
-
         private void Awake()
         {
             if (actingController == null)
@@ -160,6 +156,51 @@ namespace EvacuationShelter.Voice
             {
                 apiKey = PlayerPrefs.GetString("SAVED_GEMINI_API_KEY");
             }
+
+            LoadRoleplaySettings();
+        }
+
+        /// <summary>
+        /// Resources/ShelterRoleplaySettings.json から設定をロードします
+        /// </summary>
+        public void LoadRoleplaySettings()
+        {
+            TextAsset jsonAsset = Resources.Load<TextAsset>("ShelterRoleplaySettings");
+            if (jsonAsset != null)
+            {
+                try
+                {
+                    settingsData = JsonUtility.FromJson<ShelterRoleplaySettingsData>(jsonAsset.text);
+                    BuildSystemPrompt();
+                    Debug.Log("<color=green>[AiDialogueManager] ShelterRoleplaySettings.json からキャラクター設定を読み込みました。</color>");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[AiDialogueManager] JSON解析エラー: {ex.Message}");
+                }
+            }
+
+            Debug.LogWarning("[AiDialogueManager] ShelterRoleplaySettings.json が見つからないためハードコード初期値を使用します。");
+        }
+
+        private void BuildSystemPrompt()
+        {
+            if (settingsData == null) return;
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine(settingsData.systemPromptPrefix);
+            sb.AppendLine("\n【キャラクター設定一覧】");
+
+            if (settingsData.characters != null)
+            {
+                foreach (var c in settingsData.characters)
+                {
+                    sb.AppendLine($"{c.characterId}. {c.characterName} (ID: {c.characterId}, {c.age}歳{c.gender}): {c.description}");
+                }
+            }
+
+            loadedSystemPrompt = sb.ToString();
         }
 
         /// <summary>
@@ -169,7 +210,7 @@ namespace EvacuationShelter.Voice
         {
             chatHistory.Clear();
             openAiHistory.Clear();
-            openAiHistory.Add(new OpenAiMessage { role = "system", content = SYSTEM_PROMPT });
+            openAiHistory.Add(new OpenAiMessage { role = "system", content = loadedSystemPrompt });
 
             if (string.IsNullOrEmpty(userInitialPrompt))
             {
@@ -264,7 +305,7 @@ namespace EvacuationShelter.Voice
                 {
                     systemInstruction = new SystemInstruction
                     {
-                        parts = new List<Part> { new Part { text = SYSTEM_PROMPT } }
+                        parts = new List<Part> { new Part { text = loadedSystemPrompt } }
                     },
                     contents = chatHistory,
                     generationConfig = new GenerationConfig()
@@ -376,6 +417,15 @@ namespace EvacuationShelter.Voice
 
         private int GetSpeakerIdForCharacter(string characterId)
         {
+            if (settingsData != null && settingsData.characters != null)
+            {
+                var match = settingsData.characters.Find(x => x.characterId == characterId || x.characterId == characterId.PadLeft(2, '0'));
+                if (match != null)
+                {
+                    return match.speakerId;
+                }
+            }
+
             switch (characterId)
             {
                 case "01": return 0;  // 高齢者男性
